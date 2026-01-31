@@ -47,6 +47,40 @@ RUN npx prisma generate
 RUN npm run build
 
 # ==============================================
+# Stage 2.5: Model Downloader
+# ==============================================
+FROM python:3.10-slim AS model-downloader
+WORKDIR /app
+
+# Install system dependencies for OpenCV/Ultralytics (Required for model export)
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
+    libx11-6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies
+RUN pip install --no-cache-dir requests tqdm ultralytics onnx
+
+# Copy download script
+COPY scripts/download_models.py .
+
+# Create directory structure expected by script
+# Script expects ../backend/models relative to itself
+RUN mkdir -p /backend/models
+
+# Run download script
+# Script logic: BACKEND_DIR = SCRIPT_DIR.parent / "backend" -> /backend
+# MODELS_DIR = /backend/models
+RUN python download_models.py
+
+# Export YOLO model to ONNX (Required by Backend)
+# Assuming yolo26x.pt was downloaded to /backend/models/yolo26x.pt
+WORKDIR /backend/models
+RUN python -c "from ultralytics import YOLO; model = YOLO('yolo26x.pt'); model.export(format='onnx')"
+
+# ==============================================
 # Stage 3: Production Runtime
 # ==============================================
 FROM node:22-slim AS runner
@@ -106,7 +140,10 @@ RUN pnpm install --prod
 COPY --from=builder /app/backend/dist ./dist
 
 # Create necessary directories
-RUN mkdir -p ./data/profiles ./logs
+RUN mkdir -p ./data/profiles ./logs ./models
+
+# Copy AI Models
+COPY --from=model-downloader /backend/models ./models
 
 # Set environment variables
 ENV NODE_ENV=production
