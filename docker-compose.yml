@@ -1,0 +1,167 @@
+# ==============================================
+# 🚀 HeadlessX - Docker Compose Configuration
+# ==============================================
+#
+# Full-stack anti-detection web scraping application
+# - Frontend: Next.js 16 Dashboard
+# - Backend: Express API with Camoufox Browser
+# - Database: PostgreSQL 17
+# ==============================================
+
+services:
+    # ===========================================
+    # PostgreSQL Database
+    # ===========================================
+    postgres:
+        image: postgres:17-alpine
+        container_name: headlessx-postgres
+        restart: unless-stopped
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER:-headlessx}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-headlessx_secure_password}
+            POSTGRES_DB: ${POSTGRES_DB:-headlessx}
+            # Performance tuning
+            POSTGRES_INITDB_ARGS: '-E UTF8 --locale=C'
+        volumes:
+            # Persist database data
+            - postgres_data:/var/lib/postgresql/data
+            # Optional: Custom initialization scripts
+            # - ./docker/init-db:/docker-entrypoint-initdb.d
+        # Ports are commented out for security (Backend connects via internal network)
+        # Uncomment only if you need external access (e.g. for TablePlus/DBeaver)
+        # ports:
+        #     - '${POSTGRES_PORT:-5432}:5432'
+        networks:
+            - headlessx-network
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-headlessx}']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+
+    # ===========================================
+    # Backend API (Express + Camoufox)
+    # ===========================================
+    backend:
+        build:
+            context: .
+            dockerfile: ./backend/Dockerfile
+            args:
+                NODE_ENV: production
+        container_name: headlessx-backend
+        restart: unless-stopped
+        depends_on:
+            postgres:
+                condition: service_healthy
+        environment:
+            # Database Connection
+            # POSTGRES_HOST is configurable. Defaults to internal container 'headlessx-postgres'
+            DATABASE_URL: postgresql://${POSTGRES_USER:-headlessx}:${POSTGRES_PASSWORD:-headlessx_secure_password}@${POSTGRES_HOST:-headlessx-postgres}:5432/${POSTGRES_DB:-headlessx}
+
+            # Server Configuration
+            PORT: ${BACKEND_PORT:-3001}
+            HOST: 0.0.0.0
+            NODE_ENV: production
+
+            # CORS & Frontend URL
+            FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+
+            # Browser & Profiles
+            PROFILES_DIR: ./data/profiles
+
+            # Logging
+            LOG_LEVEL: ${LOG_LEVEL:-info}
+            LOG_DIR: ./logs
+        volumes:
+            # Persist browser profiles for fingerprint consistency
+            - browser_profiles:/app/backend/data/profiles
+            # Persist logs
+            - backend_logs:/app/backend/logs
+        networks:
+            - headlessx-network
+        # Security: Run with limited capabilities
+        cap_add:
+            - SYS_ADMIN # Required for browser sandboxing
+        # Shared memory for browser (prevents crashes)
+        shm_size: 2gb
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "require('http').get('http://localhost:3001/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+                ]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 60s
+
+    # ===========================================
+    # Frontend Dashboard (Next.js)
+    # ===========================================
+    frontend:
+        build:
+            context: .
+            dockerfile: ./frontend/Dockerfile
+            args:
+                NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+                INTERNAL_API_URL: ${NEXT_PUBLIC_API_URL_INTERNAL:-http://backend:3001}
+        container_name: headlessx-frontend
+        restart: unless-stopped
+        depends_on:
+            backend:
+                condition: service_healthy
+        environment:
+            # API URL (for server-side API proxy)
+            # INTERNAL_API_URL is used by next.config.ts for server-side proxy
+            INTERNAL_API_URL: ${NEXT_PUBLIC_API_URL_INTERNAL:-http://backend:3001}
+            # NEXT_PUBLIC_API_URL is respected from .env (via args or direct env)
+            NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+
+            # Server Configuration
+            PORT: ${FRONTEND_PORT:-3000}
+            NODE_ENV: production
+            HOSTNAME: 0.0.0.0
+        networks:
+            - headlessx-network
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "require('http').get('http://localhost:3000', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+                ]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 40s
+
+# ===========================================
+# Networks
+# ===========================================
+networks:
+    headlessx-network:
+        driver: bridge
+        name: headlessx-network
+
+# ===========================================
+# Volumes (Persistent Storage)
+# ===========================================
+volumes:
+    # PostgreSQL data
+    postgres_data:
+        driver: local
+        name: headlessx-postgres-data
+
+    # Browser fingerprint profiles
+    browser_profiles:
+        driver: local
+        name: headlessx-browser-profiles
+
+    # Backend logs
+    backend_logs:
+        driver: local
+        name: headlessx-backend-logs
